@@ -138,7 +138,6 @@ async def chat_completions(request: ChatCompletionRequest):
     # print("DEBUG0")
     current_time = time.strftime("%H:%M:%S-%s", time.localtime())
     current_time_hash = uuid.uuid5(uuid.NAMESPACE_DNS, current_time)
-    obj_hash = uuid.uuid5(uuid.NAMESPACE_DNS, str(request.dict()))
     print("[Req recv]", current_time_hash, current_time, request.dict().keys())
     try:
         global model, tokenizer, image_processor, context_len
