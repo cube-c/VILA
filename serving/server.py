@@ -1,44 +1,27 @@
-from pprint import pprint
 import argparse
 import base64
-import json
 import os
 import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from io import BytesIO
-from threading import Thread
 from typing import List, Literal, Optional, Union, get_args
 
 import requests
 import torch
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from PIL import Image as PILImage
-# from PIL.Image import Image
 from pydantic import BaseModel
-from transformers.generation.streamers import TextIteratorStreamer
 
-import tempfile
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 
-from llava.constants import (
-    DEFAULT_IM_END_TOKEN,
-    DEFAULT_IM_START_TOKEN,
-    DEFAULT_IMAGE_TOKEN,
-    IMAGE_PLACEHOLDER,
-    IMAGE_TOKEN_INDEX,
-)
-from llava.conversation import SeparatorStyle, conv_templates
-from llava.mm_utils import KeywordsStoppingCriteria, get_model_name_from_path, process_images, tokenizer_image_token
-from llava.model.builder import load_pretrained_model
+from llava.mm_utils import get_model_name_from_path
 from llava.utils import disable_torch_init
-from llava import media
 import llava
 import asyncio 
-import cv2
 from anyio.lowlevel import RunVar
 from anyio import CapacityLimiter
 
@@ -88,7 +71,6 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: Optional[int] = 512
     top_p: Optional[float] = 0.9
     temperature: Optional[float] = 0.2
-    stream: Optional[bool] = False
     use_cache: Optional[bool] = True
     num_beams: Optional[int] = 1
     # fastapi 
@@ -103,46 +85,6 @@ context_len = None
 
 def get_timestamp():
     return int(time.time())
-
-def sample_frames_from_video(video_path, num_frames=8):
-    cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_indices = [int(total_frames / num_frames * i) for i in range(num_frames)]
-    sampled_frames = []
-
-    for idx in frame_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if ret:
-            sampled_frames.append(frame)
-        else:
-            print(f"Failed to read frame at index {idx}")
-    cap.release()
-    sampled_frames_rgb = [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) for frame in sampled_frames]
-    sampled_frames_pil = [PILImage.fromarray(frame) for frame in sampled_frames_rgb]
-    return sampled_frames_pil
-
-
-def load_video(video_url: str) -> str:
-    # download or parse video from base64
-    if video_url.startswith("http") or video_url.startswith("https"):
-        response = requests.get(video_url)
-        video = BytesIO(response.content)
-    else:
-        match_results = VIDEO_CONTENT_BASE64_REGEX.match(video_url)
-        if match_results is None:
-            raise ValueError(f"Invalid video url: {video_url[:64]}")
-        image_base64 = match_results.groups()[1]
-        video = BytesIO(base64.b64decode(image_base64))
-    
-    temp_dir = tempfile.mkdtemp()
-    temp_dir = ".serving"
-    temp_fpath = os.path.join(temp_dir, f"{uuid.uuid5(uuid.NAMESPACE_DNS, video_url)}.mp4")
-    
-    with open(temp_fpath, "wb") as f:
-        f.write(video.getbuffer())
-        
-    return temp_fpath
 
 
 def load_image(image_url: str) -> PILImage:
@@ -167,8 +109,6 @@ def get_literal_values(cls, field_name: str):
     raise ValueError(f"{field_name} is not a Literal type")
 
 
-# VILA_MODELS = get_literal_values(ChatCompletionRequest, "model")
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model, model_name, tokenizer, image_processor, context_len
@@ -184,22 +124,9 @@ async def lifespan(app: FastAPI):
     global globallock
     globallock = asyncio.Lock()
     yield
-    scheduler.shutdown()  # Ensure the scheduler stops when the app shuts down
 
 
 app = FastAPI(lifespan=lifespan)
-
-from starlette.types import Receive, Scope, Send
-
-class MyStreamingResponse(StreamingResponse):
-    async def listen_for_disconnect(self, receive: Receive) -> None:
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                if globallock.locked():
-                    print("DEBUG5: release lock for disconnected http client")
-                    globallock.release()
-                break
 
 @app.get("/")
 async def read_root():
@@ -221,87 +148,43 @@ async def chat_completions(request: ChatCompletionRequest):
                 f"The endpoint is configured to use the model {model_name}, "
                 f"but the request model is {request.model}"
             )
-        # use these configs to generate completions
-        max_tokens = request.max_tokens
-        temperature = request.temperature
-        top_p = request.top_p
-        use_cache = request.use_cache
-        num_beams = request.num_beams
 
-        messages = request.messages
-        conv_mode = app.args.conv_mode
-        conv = conv_templates[conv_mode].copy()
-        
         ########################################################################### 
         prompt = []
+        messages = request.messages
         for message in messages:
             if isinstance(message.content, str):
                 prompt.append(message.content)
 
             if isinstance(message.content, list):
                 for content in message.content:
-                    # print(content.type)
+                    print(content.type)
                     if content.type == "text":
                         prompt.append(content.text)
                     elif content.type == "image_url":
                         image = load_image(content.image_url.url)
                         prompt.append(image)
-                    elif content.type == "video_url":
-                        video = load_video(content.video_url.url)
-                        print("saving video to file", video)
-                        frames = sample_frames_from_video(video, content.frames)
-                        print(f"loading {content.frames} frames", video)
-                        prompt += frames
                     else:
                         raise NotImplementedError(f"Unsupported content type: {content.type}")
         
         with torch.inference_mode():
-            if request.stream:
-                await globallock.acquire()
-                streamer = model.generate_content(prompt, stream=True)
-                # streamer = "helloworld!" 
-                def chunk_generator():
-                    for chunk_id, new_text in enumerate(streamer):
-                        if len(new_text):
-                            chunk = {
-                                "id": str(chunk_id),
-                                "object": "chat.completion.chunk",
-                                "created": get_timestamp(),
-                                "model": request.model,
-                                "choices": [{"delta": {"content": new_text}}],
-                                "usage": {
-                                    "completion_tokens": 38, 
-                                    "prompt_tokens": 8, 
-                                    "total_tokens": 46
-                                }
-                            }
-                            yield f"data: {json.dumps(chunk)}\n\n"
-                    yield "data: [DONE]\n\n"
-                
-                async def chunk_generator_wrapper():
-                    for chunk in chunk_generator():
-                        yield chunk
-                    if globallock.locked():
-                        globallock.release()
-                return MyStreamingResponse(chunk_generator_wrapper())
-            else:
-                await globallock.acquire()
-                outputs = model.generate_content(prompt)
-                # outputs = "helloworld!" 
-                if globallock.locked():
-                    globallock.release()
-                print("\nAssistant: ", outputs)
-                resp_content = outputs
-                return {
-                    "id": uuid.uuid4().hex,
-                    "object": "chat.completion",
-                    "created": get_timestamp(),
-                    "model": request.model,
-                    "index": 0,
-                    "choices": [
-                        {"message": ChatMessage(role="assistant", content=resp_content)}
-                    ],
-                }
+            await globallock.acquire()
+            outputs = model.generate_content(prompt)
+            # outputs = "helloworld!" 
+            if globallock.locked():
+                globallock.release()
+            print("\nAssistant: ", outputs)
+            resp_content = outputs
+            return {
+                "id": uuid.uuid4().hex,
+                "object": "chat.completion",
+                "created": get_timestamp(),
+                "model": request.model,
+                "index": 0,
+                "choices": [
+                    {"message": ChatMessage(role="assistant", content=resp_content)}
+                ],
+            }
     except Exception as e:
         if globallock.locked():
             globallock.release()
@@ -326,7 +209,6 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=port)
     parser.add_argument("--model-path", type=str, default=model_path)
     parser.add_argument("--conv-mode", type=str, default=conv_mode)
-    # parser.add_argument("--workers", type=int, default=1)
     app.args = parser.parse_args()
     port = int(app.args.port)
     uvicorn.run(app, 
