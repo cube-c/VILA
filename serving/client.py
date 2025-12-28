@@ -36,8 +36,6 @@ def send_request(
     model_name: str = "NVILA-LITE-2B",
     host: str = "localhost",
     port: int = 8000,
-    max_tokens: int = 512,
-    temperature: float = 0.2,
 ) -> dict:
     """Send a chat completion request to the VILA server."""
 
@@ -64,8 +62,6 @@ def send_request(
                 ]
             }
         ],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
     }
 
     # Send request
@@ -90,8 +86,6 @@ def main():
     parser.add_argument("--model", default="NVILA-LITE-2B", help="Model name (default: NVILA-LITE-2B)")
     parser.add_argument("--host", default="localhost", help="Server host (default: localhost)")
     parser.add_argument("--port", type=int, default=8000, help="Server port (default: 8000)")
-    parser.add_argument("--max-tokens", type=int, default=512, help="Maximum tokens to generate (default: 512)")
-    parser.add_argument("--temperature", type=float, default=0.2, help="Temperature for sampling (default: 0.2)")
 
     args = parser.parse_args()
 
@@ -112,8 +106,6 @@ def main():
         model_name=args.model,
         host=args.host,
         port=args.port,
-        max_tokens=args.max_tokens,
-        temperature=args.temperature,
     )
 
     # Print response
