@@ -12,6 +12,6 @@ LAYER_END="${LAYER_END:-27}"
 python llava/cli/infer_with_hook.py \
     --model-path "$MODEL_PATH" \
     --media demo_images/embspatial_300.jpg \
-    --text "What is the counter in relation to the towel? Answer with left, right, on or under." \
+    --text "What is the counter in relation to the towel? Answer with left, right, on or under" \
     --layer-start "$LAYER_START" \
     --layer-end "$LAYER_END"

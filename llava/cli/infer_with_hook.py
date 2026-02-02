@@ -3,6 +3,7 @@ import importlib.util
 import os
 import re
 import torch
+import custom_qwen2_patch
 from pathlib import Path
 
 from pydantic import BaseModel
