@@ -44,6 +44,41 @@ def remove_act_hooks(model, layer_index, hook):
         delattr(llm_layer, "time_list")
 
 
+def get_spatial_token_ranges(grid_size=11, tile_width=4, tile_height=3, tile_offset=0):
+    """
+    Calculate spatial token index ranges for all image patches.
+
+    Each patch has: [start_token, spatial_tokens (grid_size x grid_size), end_token]
+    Returns only the ranges of spatial tokens (excluding start/end tokens).
+
+    Args:
+        grid_size: Spatial grid size per tile (e.g., 11 for 11x11)
+        tile_width: Number of tiles horizontally
+        tile_height: Number of tiles vertically
+        tile_offset: Offset to start from a specific tile (e.g., 12 to start from tile 12)
+
+    Returns:
+        list of tuples: [(start_idx, end_idx), ...] for each patch's spatial tokens
+    """
+    tokens_per_tile = 2 + grid_size * grid_size  # 123 tokens per tile
+    num_tiles = tile_width * tile_height
+
+    ranges = []
+    for tile_idx in range(num_tiles):
+        # Apply tile_offset to calculate global tile index
+        global_tile_idx = tile_offset + tile_idx
+        tile_start = global_tile_idx * tokens_per_tile
+        tile_end = tile_start + tokens_per_tile
+
+        # Spatial tokens: skip start (index 0) and end (index -1)
+        spatial_start = tile_start + 1
+        spatial_end = tile_end - 1
+
+        ranges.append((spatial_start, spatial_end))
+
+    return ranges
+
+
 def analyze_token_positions(model, prompt):
     """Analyze and return information about token positions in the input."""
     from llava.utils.media import extract_media
@@ -96,6 +131,7 @@ def visualize_image_attention_per_token(
     grid_size=11,
     tile_width=4,
     tile_height=3,
+    tile_offset=0,
 ):
     """
     Visualize attention weights to image tokens for each generated token as spatial heatmaps.
@@ -161,6 +197,16 @@ def visualize_image_attention_per_token(
     combined_height = tile_height * grid_size
     combined_width = tile_width * grid_size
 
+    # Get spatial token ranges for all tiles with offset applied
+    spatial_ranges = get_spatial_token_ranges(grid_size, tile_width, tile_height, tile_offset)
+
+    # Debug: Log tile token ranges (only once)
+    print(f"\n=== Debug: Tile Token Ranges ===")
+    print(f"Spatial ranges: {spatial_ranges}")
+    print(f"Tile offset: {tile_offset}")
+    print(f"Total image tokens used: {actual_image_tokens}")
+    print(f"Tokens per tile: {tokens_per_tile}")
+
     fig, axes = plt.subplots(num_rows, num_per_row, figsize=(4*num_per_row, 4*num_rows), dpi=200)
     if num_rows == 1:
         axes = axes.reshape(1, -1)
@@ -175,16 +221,10 @@ def visualize_image_attention_per_token(
         token_pos = base_seq_len + i
 
         # Get attention from this token to all image tokens
-        image_attn = attn[token_pos, :actual_image_tokens]
+        image_attn = attn[token_pos, :]
 
         # Create combined attention map for all tiles
         combined_attn = np.zeros((combined_height, combined_width))
-
-        # Debug: Log tile token ranges (only for first generated token)
-        if i == 0:
-            print(f"\n=== Debug: Tile Token Ranges ===")
-            print(f"Total image tokens used: {actual_image_tokens}")
-            print(f"Tokens per tile: {tokens_per_tile}")
 
         # Process each tile (sweep horizontally first)
         for tile_idx in range(tile_width * tile_height):
@@ -192,20 +232,19 @@ def visualize_image_attention_per_token(
             tile_row = tile_idx // tile_width
             tile_col = tile_idx % tile_width
 
-            # Extract tokens for this tile
-            tile_start = tile_idx * tokens_per_tile
-            tile_end = tile_start + tokens_per_tile
-            tile_attn = image_attn[tile_start:tile_end]
+            # Get spatial token range for this tile (offset already applied in get_spatial_token_ranges)
+            spatial_start, spatial_end = spatial_ranges[tile_idx]
 
-            # Extract spatial tokens: skip start (index 0) and end (index -1)
-            spatial_attn = tile_attn[1:-1]
+            # Extract spatial tokens using the pre-calculated range
+            spatial_attn = image_attn[spatial_start:spatial_end]
 
             # Debug: Log max token index for this tile (only for first generated token)
             if i == 0:
-                max_attn_idx = tile_start + 1 + spatial_attn.argmax()
+                max_attn_idx = spatial_start + spatial_attn.argmax()
                 max_attn_val = spatial_attn.max()
-                print(f"  Tile [{tile_row},{tile_col}] (idx={tile_idx}): "
-                      f"tokens [{tile_start}:{tile_end-1}], max_idx={max_attn_idx}, max_val={max_attn_val:.6f}")
+                actual_tile_idx = tile_offset + tile_idx
+                print(f"  Tile [{tile_row},{tile_col}] (global_idx={actual_tile_idx}): "
+                      f"tokens [{spatial_start}:{spatial_end-1}], max_idx={max_attn_idx}, max_val={max_attn_val:.6f}")
 
             assert len(spatial_attn) == grid_size * grid_size, \
                 f"Tile {tile_idx}: expected {grid_size*grid_size} tokens, got {len(spatial_attn)}"
@@ -559,7 +598,7 @@ def main() -> None:
                 attention_matrix=square_attention,
                 image_end=image_embedding_size,
                 prompt_end=base_seq_len,
-                output_path=f"attention_map_layer_{layer_idx}.png"
+                output_path=f"attn_map/layer_{layer_idx}.png"
             )
 
             # Visualize image attention for each generated token as 11x11 spatial maps
@@ -569,8 +608,23 @@ def main() -> None:
                 base_seq_len=base_seq_len,
                 tokenizer=model.tokenizer,
                 output_ids=response_token_ids,
-                output_path=f"image_attention_per_token_layer_{layer_idx}.png",
-                grid_size=11  # 11x11 spatial grid after 3x3 downsampling
+                output_path=f"attn_map/image_per_token_layer_{layer_idx}.png",
+                tile_width=4,
+                tile_height=3,
+                tile_offset=0,
+            )
+
+            # Visualize single tile (tile 12) with higher detail
+            visualize_image_attention_per_token(
+                square_attention=square_attention,
+                image_embedding_size=image_embedding_size,
+                base_seq_len=base_seq_len,
+                tokenizer=model.tokenizer,
+                output_ids=response_token_ids,
+                output_path=f"attn_map/image_per_token_tile12_layer_{layer_idx}.png",
+                tile_width=1,
+                tile_height=1,
+                tile_offset=12,
             )
 
         # Remove hooks for this layer
