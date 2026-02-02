@@ -1,11 +1,10 @@
 import argparse
 import importlib.util
-import json
 import os
 import re
 import torch
+from pathlib import Path
 
-import cv2
 from pydantic import BaseModel
 from termcolor import colored
 import matplotlib.pyplot as plt
@@ -16,7 +15,6 @@ from llava import conversation as clib
 from llava.media import Image
 from llava.model.configuration_llava import JsonSchemaResponseFormat, ResponseFormat
 
-import time
 from typing import Tuple
 from torch import Tensor
 
@@ -397,7 +395,7 @@ def get_schema_from_python_path(path: str) -> str:
     assert issubclass(
         Main, BaseModel
     ), f"The provided python file {path} does not contain a class Main that describes a JSON schema"
-    return Main.schema_json()
+    return Main.model_json_schema()
 
 
 def decode_time_token(text: str, *, duration: float, num_time_tokens: int, time_token_format: str) -> str:
@@ -593,12 +591,16 @@ def main() -> None:
             # Tokenize the response to get output token IDs
             response_token_ids = model.tokenizer.encode(response, add_special_tokens=False)
 
+            # Add folder for attention map outputs
+            debug_dir = Path("output/attn_map")
+            debug_dir.mkdir(exist_ok=True, parents=True)
+
             # Visualize the full attention map
             visualize_attention_map(
                 attention_matrix=square_attention,
                 image_end=image_embedding_size,
                 prompt_end=base_seq_len,
-                output_path=f"attn_map/layer_{layer_idx}.png"
+                output_path=str(debug_dir / f"attention_map_layer_{layer_idx}.png"),
             )
 
             # Visualize image attention for each generated token as 11x11 spatial maps
@@ -608,7 +610,7 @@ def main() -> None:
                 base_seq_len=base_seq_len,
                 tokenizer=model.tokenizer,
                 output_ids=response_token_ids,
-                output_path=f"attn_map/image_per_token_layer_{layer_idx}.png",
+                output_path=str(debug_dir / f"image_per_token_layer_{layer_idx}.png"),
                 tile_width=4,
                 tile_height=3,
                 tile_offset=0,
@@ -621,7 +623,7 @@ def main() -> None:
                 base_seq_len=base_seq_len,
                 tokenizer=model.tokenizer,
                 output_ids=response_token_ids,
-                output_path=f"attn_map/image_per_token_tile12_layer_{layer_idx}.png",
+                output_path=str(debug_dir / f"image_per_token_tile12_layer_{layer_idx}.png"),
                 tile_width=1,
                 tile_height=1,
                 tile_offset=12,

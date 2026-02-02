@@ -918,8 +918,8 @@ class LlavaMetaForCausalLM(ABC):
         # Debug: Save patched images for visualization
         import torchvision
         from pathlib import Path
-        debug_dir = Path("debug_patches")
-        debug_dir.mkdir(exist_ok=True)
+        debug_dir = Path("output/debug_patches")
+        debug_dir.mkdir(exist_ok=True, parents=True)
 
         for media_type, media_list in media.items():
             print(f"\n=== Debug: {media_type} patches ===")
