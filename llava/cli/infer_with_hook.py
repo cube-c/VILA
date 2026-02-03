@@ -29,7 +29,6 @@ def add_act_hooks(model, layer_index):
     print("Model LLM layers:", model.llm.model.layers[layer_index].self_attn)
     llm_layer = model.llm.model.layers[layer_index].self_attn
     setattr(llm_layer, "acts_list", [])
-    setattr(llm_layer, "time_list", [])
     hook = llm_layer.register_forward_hook(act_hook)
     return hook
 
@@ -39,8 +38,6 @@ def remove_act_hooks(model, layer_index, hook):
     llm_layer = model.llm.model.layers[layer_index].self_attn
     if hasattr(llm_layer, "acts_list"):
         delattr(llm_layer, "acts_list")
-    if hasattr(llm_layer, "time_list"):
-        delattr(llm_layer, "time_list")
 
 
 def get_spatial_token_ranges(grid_size=11, tile_width=4, tile_height=3, tile_offset=0):
@@ -398,26 +395,6 @@ def get_schema_from_python_path(path: str) -> str:
     ), f"The provided python file {path} does not contain a class Main that describes a JSON schema"
     return Main.model_json_schema()
 
-
-def decode_time_token(text: str, *, duration: float, num_time_tokens: int, time_token_format: str) -> str:
-    """Replace time tokens in text with actual timestamps."""
-    for t in range(num_time_tokens):
-        time_token = time_token_format.format(t=t)
-        timestamp = round(t * duration / (num_time_tokens - 1), 2)
-        text = text.replace(time_token, f"<{timestamp}>")
-
-    # Handle out-of-range time tokens
-    excess_pattern = re.compile(rf"<t(\d+)>")
-    matches = excess_pattern.findall(text)
-    for match in matches:
-        t = int(match)
-        if t >= num_time_tokens:
-            timestamp = round(duration, 2)  # Map to the end of the video
-            text = text.replace(f"<t{t}>", f"<{timestamp}>")
-
-    return text
-
-
 def configure_ps3_and_context_length(model):
     """Configure PS3 settings and adjust context length based on those settings."""
 
@@ -522,113 +499,115 @@ def main() -> None:
     model.llm.config.use_cache=False
     model.llm.config.output_attentions=True
 
+    hooks = []
+
     # Loop through layers
     for layer_idx in range(args.layer_start, args.layer_end + 1):
-        print(f"\n{'='*60}")
-        print(f"Processing Layer {layer_idx}")
-        print(f"{'='*60}")
-
         # Add hooks for this layer
-        hook = add_act_hooks(model, layer_idx)
+        hooks.append(add_act_hooks(model, layer_idx))
 
-        # Generate response
-        response = model.generate_content(prompt, response_format=response_format)
-        print(colored(response, "cyan", attrs=["bold"]))
+    # Generate response
+    response = model.generate_content(prompt, response_format=response_format)
+    print(colored(response, "cyan", attrs=["bold"]))
 
+    for layer_idx in range(args.layer_start, args.layer_end + 1):
         # Process attention tensors into square lower triangular matrix
         llm_layer = model.llm.model.layers[layer_idx].self_attn
         acts_list = llm_layer.acts_list
+        hook = hooks[layer_idx - args.layer_start]
 
-        if len(acts_list) > 0:
-            print(f"\n=== Attention Tensor Processing (Layer {layer_idx}) ===")
-            print(f"Number of attention tensors captured: {len(acts_list)}")
+        if len(acts_list) == 0:
+            continue
 
-            first_tensor = acts_list[0]
-            batch_size, num_heads, base_seq_len, _ = first_tensor.shape
+        print(f"\n=== Attention Tensor Processing (Layer {layer_idx}) ===")
+        print(f"Number of attention tensors captured: {len(acts_list)}")
 
-            # Calculate final sequence length
-            final_seq_len = base_seq_len + (len(acts_list) - 1)
-            num_generated_tokens = len(acts_list) - 1
+        first_tensor = acts_list[0]
+        batch_size, num_heads, base_seq_len, _ = first_tensor.shape
 
-            print(f"\nSequence breakdown:")
-            print(f"  Base sequence length (image + prompt): {base_seq_len}")
-            print(f"  Number of generated tokens: {num_generated_tokens}")
-            print(f"  Final sequence length: {final_seq_len}")
+        # Calculate final sequence length
+        final_seq_len = base_seq_len + (len(acts_list) - 1)
+        num_generated_tokens = len(acts_list) - 1
 
-            # Estimate image embedding size
-            # Image tokens are replaced by image embeddings during forward pass
-            num_image_tokens_in_input = len(token_info["image_token_positions"])
-            num_text_tokens_in_input = len(token_info["text_token_positions"])
+        print(f"\nSequence breakdown:")
+        print(f"  Base sequence length (image + prompt): {base_seq_len}")
+        print(f"  Number of generated tokens: {num_generated_tokens}")
+        print(f"  Final sequence length: {final_seq_len}")
 
-            # The base_seq_len includes expanded image embeddings
-            # Estimate: base_seq_len = text_tokens + (image_embeddings per image token)
-            if num_image_tokens_in_input > 0:
-                image_embedding_size = base_seq_len - num_text_tokens_in_input
-            else:
-                image_embedding_size = 0
+        # Estimate image embedding size
+        # Image tokens are replaced by image embeddings during forward pass
+        num_image_tokens_in_input = len(token_info["image_token_positions"])
+        num_text_tokens_in_input = len(token_info["text_token_positions"])
 
-            print(f"\nToken position breakdown:")
-            print(f"  Image embedding tokens: 0 to {image_embedding_size-1} ({image_embedding_size} tokens)")
-            print(f"  Prompt text tokens: {image_embedding_size} to {base_seq_len-1} ({num_text_tokens_in_input} tokens)")
-            print(f"  Generated tokens: {base_seq_len} to {final_seq_len-1} ({num_generated_tokens} tokens)")
+        # The base_seq_len includes expanded image embeddings
+        # Estimate: base_seq_len = text_tokens + (image_embeddings per image token)
+        if num_image_tokens_in_input > 0:
+            image_embedding_size = base_seq_len - num_text_tokens_in_input
+        else:
+            image_embedding_size = 0
 
-            # Create square tensor filled with zeros
-            square_attention = torch.zeros(
-                batch_size, num_heads, final_seq_len, final_seq_len,
-                dtype=first_tensor.dtype, device=first_tensor.device
-            )
+        print(f"\nToken position breakdown:")
+        print(f"  Image embedding tokens: 0 to {image_embedding_size-1} ({image_embedding_size} tokens)")
+        print(f"  Prompt text tokens: {image_embedding_size} to {base_seq_len-1} ({num_text_tokens_in_input} tokens)")
+        print(f"  Generated tokens: {base_seq_len} to {final_seq_len-1} ({num_generated_tokens} tokens)")
 
-            # Fill in the base square matrix (top-left)
-            square_attention[:, :, :base_seq_len, :base_seq_len] = first_tensor
+        # Create square tensor filled with zeros
+        square_attention = torch.zeros(
+            batch_size, num_heads, final_seq_len, final_seq_len,
+            dtype=first_tensor.dtype, device=first_tensor.device
+        )
 
-            # Fill in each subsequent row
-            for i, tensor in enumerate(acts_list[1:], start=0):
-                row_idx = base_seq_len + i
-                _, _, _, width = tensor.shape
-                square_attention[:, :, row_idx:row_idx+1, :width] = tensor
+        # Fill in the base square matrix (top-left)
+        square_attention[:, :, :base_seq_len, :base_seq_len] = first_tensor
 
-            print(f"\nFinal square attention shape: {square_attention.shape}")
+        # Fill in each subsequent row
+        for i, tensor in enumerate(acts_list[1:], start=0):
+            row_idx = base_seq_len + i
+            _, _, _, width = tensor.shape
+            square_attention[:, :, row_idx:row_idx+1, :width] = tensor
 
-            # Tokenize the response to get output token IDs
-            response_token_ids = model.tokenizer.encode(response, add_special_tokens=False)
+        print(f"\nFinal square attention shape: {square_attention.shape}")
 
-            # Add folder for attention map outputs
-            debug_dir = Path("output/attn_map")
-            debug_dir.mkdir(exist_ok=True, parents=True)
+        # Tokenize the response to get output token IDs
+        response_token_ids = model.tokenizer.encode(response, add_special_tokens=False)
 
-            # Visualize the full attention map
-            visualize_attention_map(
-                attention_matrix=square_attention,
-                image_end=image_embedding_size,
-                prompt_end=base_seq_len,
-                output_path=str(debug_dir / f"attention_map_layer_{layer_idx}.png"),
-            )
+        # Add folder for attention map outputs
+        debug_dir = Path("output/attn_map")
+        debug_dir.mkdir(exist_ok=True, parents=True)
 
-            # Visualize image attention for each generated token as 11x11 spatial maps
-            visualize_image_attention_per_token(
-                square_attention=square_attention,
-                image_embedding_size=image_embedding_size,
-                base_seq_len=base_seq_len,
-                tokenizer=model.tokenizer,
-                output_ids=response_token_ids,
-                output_path=str(debug_dir / f"image_per_token_layer_{layer_idx}.png"),
-                tile_width=4,
-                tile_height=3,
-                tile_offset=0,
-            )
+        # Visualize the full attention map
+        visualize_attention_map(
+            attention_matrix=square_attention,
+            image_end=image_embedding_size,
+            prompt_end=base_seq_len,
+            output_path=str(debug_dir / f"attention_map_layer_{layer_idx}.png"),
+        )
 
-            # Visualize single tile (tile 12) with higher detail
-            visualize_image_attention_per_token(
-                square_attention=square_attention,
-                image_embedding_size=image_embedding_size,
-                base_seq_len=base_seq_len,
-                tokenizer=model.tokenizer,
-                output_ids=response_token_ids,
-                output_path=str(debug_dir / f"image_per_token_tile12_layer_{layer_idx}.png"),
-                tile_width=1,
-                tile_height=1,
-                tile_offset=12,
-            )
+        # Visualize image attention for each generated token as 11x11 spatial maps
+        visualize_image_attention_per_token(
+            square_attention=square_attention,
+            image_embedding_size=image_embedding_size,
+            base_seq_len=base_seq_len,
+            tokenizer=model.tokenizer,
+            output_ids=response_token_ids,
+            output_path=str(debug_dir / f"image_per_token_layer_{layer_idx}.png"),
+            tile_width=4,
+            tile_height=3,
+            tile_offset=0,
+        )
+
+        # Visualize single tile (tile 12) with higher detail
+        visualize_image_attention_per_token(
+            square_attention=square_attention,
+            image_embedding_size=image_embedding_size,
+            base_seq_len=base_seq_len,
+            tokenizer=model.tokenizer,
+            output_ids=response_token_ids,
+            output_path=str(debug_dir / f"image_per_token_tile12_layer_{layer_idx}.png"),
+            tile_width=1,
+            tile_height=1,
+            tile_offset=12,
+        )
 
         # Remove hooks for this layer
         remove_act_hooks(model, layer_idx, hook)
