@@ -20,9 +20,7 @@ from typing import Tuple
 from torch import Tensor
 
 def act_hook(module, in_values: Tuple[Tensor], out_values: Tuple[Tensor]) -> None:
-    # setattr(module, ACT_ATTR_NAME, out_values)
     module.acts_list.append(out_values[1]) # (Tensor, DynamicCache)
-    # print("Registered act hook, value shape", out_values[1].shape)
 
 def add_act_hooks(model, layer_index):
     print(f"Adding activations on model layer {layer_index}!")
@@ -300,6 +298,108 @@ def visualize_image_attention_per_token(
     plt.close()
 
 
+def visualize_attention_ratio_per_layer(attention_matrices, output_path):
+    """
+    Plot attention ratios (image, prompt, generated) across layers for the first generated token.
+
+    Args:
+        attention_matrices: list of dicts with keys:
+            "layer_idx", "image_ratio", "prompt_ratio", "gen_ratio"
+        output_path: path to save the figure
+    """
+    import numpy as np
+
+    if not attention_matrices:
+        print("No attention data to plot per-layer ratios.")
+        return
+
+    layer_indices = [d["layer_idx"] for d in attention_matrices]
+    image_ratios = [d["image_ratio"] for d in attention_matrices]
+    prompt_ratios = [d["prompt_ratio"] for d in attention_matrices]
+    gen_ratios = [d["gen_ratio"] for d in attention_matrices]
+
+    fig, ax = plt.subplots(figsize=(max(6, len(layer_indices) * 0.4), 5), dpi=150)
+    ax.plot(layer_indices, image_ratios, "o-", color="tab:red", label="Image", markersize=5)
+    ax.plot(layer_indices, prompt_ratios, "o-", color="tab:orange", label="Prompt", markersize=5)
+    ax.plot(layer_indices, gen_ratios, "o-", color="tab:blue", label="Generated", markersize=5)
+
+    ax.set_xlabel("Layer Index")
+    ax.set_ylabel("Attention Ratio")
+    ax.set_title("Attention Ratio per Layer (First Generated Token)")
+    ax.set_xticks(layer_indices)
+    ax.set_ylim(0, 1.05)
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Per-layer attention ratio saved to: {output_path}")
+    plt.close()
+
+
+def visualize_attention_ratio(attention_matrix, image_end, prompt_end, output_path, tokenizer=None, output_ids=None):
+    import numpy as np
+
+    if attention_matrix.dim() == 4:
+        attn = attention_matrix[0].mean(dim=0).cpu().numpy()
+    else:
+        attn = attention_matrix.cpu().numpy()
+
+    seq_len = attn.shape[0]
+    num_generated = seq_len - prompt_end
+    if num_generated <= 0:
+        print("No generated tokens to compute attention ratio.")
+        return
+
+    # For each generated token, compute fraction of attention going to image vs prompt vs generated tokens
+    image_ratios = []
+    prompt_ratios = []
+    gen_ratios = []
+    token_labels = []
+
+    for i in range(num_generated):
+        pos = prompt_end + i
+        image_attn = attn[pos, :image_end].sum() if image_end > 0 else 0.0
+        prompt_attn = attn[pos, image_end:prompt_end].sum()
+        gen_attn = attn[pos, prompt_end:pos + 1].sum()
+
+        image_ratios.append(image_attn)
+        prompt_ratios.append(prompt_attn)
+        gen_ratios.append(gen_attn)
+
+        if tokenizer is not None and output_ids is not None and i < len(output_ids):
+            label = tokenizer.decode(output_ids[i], skip_special_tokens=False).strip()
+            if not label:
+                label = f"[{output_ids[i]}]"
+        else:
+            label = str(i)
+        token_labels.append(f"{i}: {label}")
+
+    image_ratios = np.array(image_ratios)
+    prompt_ratios = np.array(prompt_ratios)
+    gen_ratios = np.array(gen_ratios)
+    x = np.arange(num_generated)
+
+    fig, ax = plt.subplots(figsize=(max(6, num_generated * 0.5), 5), dpi=150)
+    ax.bar(x, image_ratios, label="Image", color="tab:red")
+    ax.bar(x, prompt_ratios, bottom=image_ratios, label="Prompt", color="tab:orange")
+    ax.bar(x, gen_ratios, bottom=image_ratios + prompt_ratios, label="Generated", color="tab:blue")
+
+    ax.set_xlabel("Generated Token")
+    ax.set_ylabel("Attention Ratio")
+    ax.set_title("Attention Ratio per Generated Token")
+    ax.set_xticks(x)
+    ax.set_xticklabels(token_labels, rotation=60, ha="right", fontsize=7)
+    ax.set_ylim(0, 1.05)
+    ax.legend(loc="upper right")
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Attention ratio saved to: {output_path}")
+    plt.close()
+
+
+
 def visualize_attention_map(attention_matrix, image_end, prompt_end, output_path="attention_map.png", gamma_factor=2.2):
     """
     Visualize the attention matrix as a heatmap with region annotations.
@@ -500,6 +600,7 @@ def main() -> None:
     model.llm.config.output_attentions=True
 
     hooks = []
+    per_layer_ratios = []
 
     # Loop through layers
     for layer_idx in range(args.layer_start, args.layer_end + 1):
@@ -609,9 +710,42 @@ def main() -> None:
             tile_offset=12,
         )
 
+        # Visualize attention ratio per generated token
+        visualize_attention_ratio(
+            attention_matrix=square_attention,
+            image_end=image_embedding_size,
+            prompt_end=base_seq_len,
+            output_path=str(debug_dir / f"attention_ratio_layer_{layer_idx}.png"),
+            tokenizer=model.tokenizer,
+            output_ids=response_token_ids,
+        )
+
+        # Collect first-generated-token ratios for cross-layer plot
+        attn = square_attention[0].mean(dim=0).cpu().numpy()
+        first_gen_pos = base_seq_len  # position of first generated token
+        if first_gen_pos < attn.shape[0]:
+            img_r = float(attn[first_gen_pos, :image_embedding_size].sum()) if image_embedding_size > 0 else 0.0
+            prompt_r = float(attn[first_gen_pos, image_embedding_size:base_seq_len].sum())
+            gen_r = float(attn[first_gen_pos, base_seq_len:first_gen_pos + 1].sum())
+            per_layer_ratios.append({
+                "layer_idx": layer_idx,
+                "image_ratio": img_r,
+                "prompt_ratio": prompt_r,
+                "gen_ratio": gen_r,
+            })
+
         # Remove hooks for this layer
         remove_act_hooks(model, layer_idx, hook)
         print(f"\nCompleted processing layer {layer_idx}")
+
+    # Visualize attention ratios across all layers
+    if per_layer_ratios:
+        debug_dir = Path("output/attn_map")
+        debug_dir.mkdir(exist_ok=True, parents=True)
+        visualize_attention_ratio_per_layer(
+            per_layer_ratios,
+            output_path=str(debug_dir / "attention_ratio_per_layer.png"),
+        )
 
 
 if __name__ == "__main__":
