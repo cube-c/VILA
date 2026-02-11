@@ -9,9 +9,16 @@ MODEL_PATH="${MODEL_PATH:-Efficient-Large-Model/NVILA-Lite-2B}"
 LAYER_START="${LAYER_START:-0}"
 LAYER_END="${LAYER_END:-27}"
 
-python llava/cli/infer_with_hook.py \
+python llava/cli/attn_ratio.py \
     --model-path "$MODEL_PATH" \
     --media demo_images/embspatial_300.jpg \
-    --text "What is the counter in relation to the towel? Answer with left, right, on or under." \
+    --text "What is the counter in relation to the towel? Answer with left, right, above or under." \
     --layer-start "$LAYER_START" \
     --layer-end "$LAYER_END"
+
+# python llava/cli/infer_with_hook.py \
+    # --model-path "$MODEL_PATH" \
+    # --media demo_images/embspatial_300.jpg \
+    # --text "What is the counter in relation to the towel? Answer with left, right, above or under." \
+    # --layer-start "$LAYER_START" \
+    # --layer-end "$LAYER_END"

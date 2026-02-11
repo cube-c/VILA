@@ -596,7 +596,7 @@ def main() -> None:
     token_info = analyze_token_positions(model, prompt)
 
     # Configure model for attention capture
-    model.llm.config.use_cache=False
+    model.llm.config.use_cache=True
     model.llm.config.output_attentions=True
 
     hooks = []
@@ -677,12 +677,12 @@ def main() -> None:
         debug_dir.mkdir(exist_ok=True, parents=True)
 
         # Visualize the full attention map
-        visualize_attention_map(
-            attention_matrix=square_attention,
-            image_end=image_embedding_size,
-            prompt_end=base_seq_len,
-            output_path=str(debug_dir / f"attention_map_layer_{layer_idx}.png"),
-        )
+        # visualize_attention_map(
+            # attention_matrix=square_attention,
+            # image_end=image_embedding_size,
+            # prompt_end=base_seq_len,
+            # output_path=str(debug_dir / f"attention_map_layer_{layer_idx}.png"),
+        # )
 
         # Visualize image attention for each generated token as 11x11 spatial maps
         visualize_image_attention_per_token(

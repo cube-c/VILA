@@ -915,30 +915,30 @@ class LlavaMetaForCausalLM(ABC):
             else:
                 raise ValueError(f"Unsupported media type: {name}")
 
-        # Debug: Save patched images for visualization
-        import torchvision
-        from pathlib import Path
-        debug_dir = Path("output/debug_patches")
-        debug_dir.mkdir(exist_ok=True, parents=True)
+        # # Debug: Save patched images for visualization
+        # import torchvision
+        # from pathlib import Path
+        # debug_dir = Path("output/debug_patches")
+        # debug_dir.mkdir(exist_ok=True, parents=True)
 
-        for media_type, media_list in media.items():
-            print(f"\n=== Debug: {media_type} patches ===")
-            for img_idx, img_tensor in enumerate(media_list):
-                print(f"  {media_type}[{img_idx}] shape: {img_tensor.shape}")
+        # for media_type, media_list in media.items():
+            # print(f"\n=== Debug: {media_type} patches ===")
+            # for img_idx, img_tensor in enumerate(media_list):
+                # print(f"  {media_type}[{img_idx}] shape: {img_tensor.shape}")
 
-                # Save each patch as an image
-                if len(img_tensor.shape) == 4:  # [num_patches, C, H, W]
-                    for patch_idx in range(img_tensor.shape[0]):
-                        patch = img_tensor[patch_idx]
-                        # Denormalize and save
-                        save_path = debug_dir / f"{media_type}_img{img_idx}_patch{patch_idx}.png"
-                        torchvision.utils.save_image(patch, save_path, normalize=True)
-                    print(f"    Saved {img_tensor.shape[0]} patches to {debug_dir}/")
-                elif len(img_tensor.shape) == 3:  # [C, H, W] - single image
-                    save_path = debug_dir / f"{media_type}_img{img_idx}.png"
-                    torchvision.utils.save_image(img_tensor, save_path, normalize=True)
-                    print(f"    Saved single image to {save_path}")
-        print(f"=== End debug patches ===\n")
+                # # Save each patch as an image
+                # if len(img_tensor.shape) == 4:  # [num_patches, C, H, W]
+                    # for patch_idx in range(img_tensor.shape[0]):
+                        # patch = img_tensor[patch_idx]
+                        # # Denormalize and save
+                        # save_path = debug_dir / f"{media_type}_img{img_idx}_patch{patch_idx}.png"
+                        # torchvision.utils.save_image(patch, save_path, normalize=True)
+                    # print(f"    Saved {img_tensor.shape[0]} patches to {debug_dir}/")
+                # elif len(img_tensor.shape) == 3:  # [C, H, W] - single image
+                    # save_path = debug_dir / f"{media_type}_img{img_idx}.png"
+                    # torchvision.utils.save_image(img_tensor, save_path, normalize=True)
+                    # print(f"    Saved single image to {save_path}")
+        # print(f"=== End debug patches ===\n")
 
         # Tokenize the conversation
         input_ids = tokenize_conversation(conversation, self.tokenizer, add_generation_prompt=True).cuda().unsqueeze(0)
