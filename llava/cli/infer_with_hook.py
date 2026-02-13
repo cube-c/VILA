@@ -3,6 +3,7 @@ import importlib.util
 import os
 import re
 import torch
+import numpy as np
 import custom_qwen2_patch
 from pathlib import Path
 
@@ -232,14 +233,6 @@ def visualize_image_attention_per_token(
             # Extract spatial tokens using the pre-calculated range
             spatial_attn = image_attn[spatial_start:spatial_end]
 
-            # Debug: Log max token index for this tile (only for first generated token)
-            if i == 0:
-                max_attn_idx = spatial_start + spatial_attn.argmax()
-                max_attn_val = spatial_attn.max()
-                actual_tile_idx = tile_offset + tile_idx
-                print(f"  Tile [{tile_row},{tile_col}] (global_idx={actual_tile_idx}): "
-                      f"tokens [{spatial_start}:{spatial_end-1}], max_idx={max_attn_idx}, max_val={max_attn_val:.6f}")
-
             assert len(spatial_attn) == grid_size * grid_size, \
                 f"Tile {tile_idx}: expected {grid_size*grid_size} tokens, got {len(spatial_attn)}"
 
@@ -298,6 +291,82 @@ def visualize_image_attention_per_token(
     plt.close()
 
 
+def visualize_text_attention_per_gen_token(
+    text_attn_by_layer,
+    layer_indices,
+    text_token_labels,
+    gen_token_labels,
+    output_path="text_attention_heatmaps.png",
+    num_per_row=4,
+):
+    """
+    Visualize text (prompt) attention for each generated token as a (layers x text_tokens) heatmap.
+
+    Args:
+        text_attn_by_layer: dict mapping layer_idx -> np.ndarray of shape (num_generated, num_text_tokens)
+        layer_indices: sorted list of layer indices
+        text_token_labels: list of str labels for each text token
+        gen_token_labels: list of str labels for each generated token
+        output_path: path to save the figure
+        num_per_row: number of heatmaps per row
+    """
+    import numpy as np
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    num_layers = len(layer_indices)
+    num_generated = text_attn_by_layer[layer_indices[0]].shape[0]
+    num_text_tokens = text_attn_by_layer[layer_indices[0]].shape[1]
+
+    # Stack into (num_generated, num_layers, num_text_tokens)
+    stacked = np.stack([text_attn_by_layer[l] for l in layer_indices], axis=1)
+
+    num_rows = (num_generated + num_per_row - 1) // num_per_row
+    fig, axes = plt.subplots(
+        num_rows, num_per_row,
+        figsize=(5 * num_per_row, max(3, num_layers * 0.25) * num_rows),
+        dpi=150,
+        squeeze=False,
+    )
+    plt.subplots_adjust(wspace=0.4, hspace=0.6)
+
+    # Truncate labels if there are too many text tokens
+    max_label_count = 60
+    show_xticks = num_text_tokens <= max_label_count
+
+    for i in range(num_generated):
+        row_idx = i // num_per_row
+        col_idx = i % num_per_row
+        ax = axes[row_idx, col_idx]
+
+        heatmap = stacked[i]  # (num_layers, num_text_tokens)
+
+        im = ax.imshow(heatmap, cmap="hot", aspect="auto", interpolation="nearest")
+        ax.set_title(gen_token_labels[i] if i < len(gen_token_labels) else f"Token {i}", fontsize=8, pad=4)
+        ax.set_ylabel("Layer", fontsize=7)
+        ax.set_yticks(range(num_layers))
+        ax.set_yticklabels(layer_indices, fontsize=5)
+
+        if show_xticks:
+            ax.set_xticks(range(num_text_tokens))
+            ax.set_xticklabels(text_token_labels, rotation=90, fontsize=4, ha="center")
+        else:
+            ax.set_xlabel("Text token pos", fontsize=7)
+
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="4%", pad=0.05)
+        plt.colorbar(im, cax=cax)
+
+    # Hide unused subplots
+    for i in range(num_generated, num_rows * num_per_row):
+        axes[i // num_per_row, i % num_per_row].axis("off")
+
+    fig.suptitle("Text Token Attention per Generated Token (layers x text tokens)", fontsize=11, y=1.01)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    print(f"Text attention heatmaps saved to: {output_path}")
+    plt.close()
+
+
 def visualize_attention_ratio_per_layer(attention_matrices, output_path):
     """
     Plot attention ratios (image, prompt, generated) across layers for the first generated token.
@@ -307,8 +376,6 @@ def visualize_attention_ratio_per_layer(attention_matrices, output_path):
             "layer_idx", "image_ratio", "prompt_ratio", "gen_ratio"
         output_path: path to save the figure
     """
-    import numpy as np
-
     if not attention_matrices:
         print("No attention data to plot per-layer ratios.")
         return
@@ -318,7 +385,7 @@ def visualize_attention_ratio_per_layer(attention_matrices, output_path):
     prompt_ratios = [d["prompt_ratio"] for d in attention_matrices]
     gen_ratios = [d["gen_ratio"] for d in attention_matrices]
 
-    fig, ax = plt.subplots(figsize=(max(6, len(layer_indices) * 0.4), 5), dpi=150)
+    _, ax = plt.subplots(figsize=(max(6, len(layer_indices) * 0.4), 5), dpi=150)
     ax.plot(layer_indices, image_ratios, "o-", color="tab:red", label="Image", markersize=5)
     ax.plot(layer_indices, prompt_ratios, "o-", color="tab:orange", label="Prompt", markersize=5)
     ax.plot(layer_indices, gen_ratios, "o-", color="tab:blue", label="Generated", markersize=5)
@@ -380,7 +447,7 @@ def visualize_attention_ratio(attention_matrix, image_end, prompt_end, output_pa
     gen_ratios = np.array(gen_ratios)
     x = np.arange(num_generated)
 
-    fig, ax = plt.subplots(figsize=(max(6, num_generated * 0.5), 5), dpi=150)
+    _, ax = plt.subplots(figsize=(max(6, num_generated * 0.5), 5), dpi=150)
     ax.bar(x, image_ratios, label="Image", color="tab:red")
     ax.bar(x, prompt_ratios, bottom=image_ratios, label="Prompt", color="tab:orange")
     ax.bar(x, gen_ratios, bottom=image_ratios + prompt_ratios, label="Generated", color="tab:blue")
@@ -426,7 +493,7 @@ def visualize_attention_map(attention_matrix, image_end, prompt_end, output_path
     seq_len = enhanced_attn.shape[0]
 
     # Create figure with larger size for better visibility
-    fig, ax = plt.subplots(figsize=(12, 10))
+    _, ax = plt.subplots(figsize=(12, 10))
 
     # Plot heatmap with gamma-corrected attention
     im = ax.imshow(enhanced_attn, cmap='viridis', aspect='auto', interpolation='nearest')
@@ -548,7 +615,6 @@ def configure_ps3_and_context_length(model):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model-path", "-m", type=str, required=True)
-    parser.add_argument("--lora-path", "-l", type=str, default=None)
     parser.add_argument("--conv-mode", "-c", type=str, default="auto")
     parser.add_argument("--text", type=str)
     parser.add_argument("--media", type=str, nargs="+")
@@ -569,10 +635,7 @@ def main() -> None:
         response_format = ResponseFormat(type="json_schema", json_schema=JsonSchemaResponseFormat(schema=schema_str))
 
     # Load model
-    if args.lora_path is None:
-        model = llava.load(args.model_path, model_base=None)
-    else:
-        model = llava.load(args.lora_path, model_base=args.model_path)
+    model = llava.load(args.model_path, model_base=None)
 
     # Configure PS3 and adjust context length
     configure_ps3_and_context_length(model)
@@ -601,6 +664,7 @@ def main() -> None:
 
     hooks = []
     per_layer_ratios = []
+    text_attn_by_layer = {}  # layer_idx -> (num_generated, num_text_tokens)
 
     # Loop through layers
     for layer_idx in range(args.layer_start, args.layer_end + 1):
@@ -696,7 +760,7 @@ def main() -> None:
             tile_height=3,
             tile_offset=0,
         )
-
+        
         # Visualize single tile (tile 12) with higher detail
         visualize_image_attention_per_token(
             square_attention=square_attention,
@@ -734,9 +798,51 @@ def main() -> None:
                 "gen_ratio": gen_r,
             })
 
+        # Collect text attention for each generated token -> (num_generated, num_text_tokens)
+        num_generated_tokens = final_seq_len - base_seq_len
+        num_text_tokens = base_seq_len - image_embedding_size
+        if num_generated_tokens > 0 and num_text_tokens > 0:
+            text_attn_rows = []
+            for g in range(num_generated_tokens):
+                gen_pos = base_seq_len + g
+                row = attn[gen_pos, image_embedding_size:base_seq_len]
+                text_attn_rows.append(row)
+            text_attn_by_layer[layer_idx] = np.stack(text_attn_rows, axis=0)
+
         # Remove hooks for this layer
         remove_act_hooks(model, layer_idx, hook)
         print(f"\nCompleted processing layer {layer_idx}")
+
+    # Visualize text attention for each generated token as (# of layers) x (# of text tokens) heatmaps
+    if text_attn_by_layer:
+        debug_dir = Path("output/attn_map")
+        debug_dir.mkdir(exist_ok=True, parents=True)
+
+        layer_indices = sorted(text_attn_by_layer.keys())
+
+        # Build text token labels from input_ids at text positions
+        text_positions = token_info["text_token_positions"]
+        text_token_labels = []
+        for pos in text_positions:
+            tid = token_info["input_ids"][pos]
+            tok = model.tokenizer.decode([tid], skip_special_tokens=False).strip()
+            print(pos, tid, tok)
+            text_token_labels.append(tok if tok else f"[{tid}]")
+
+        # Build generated token labels
+        response_token_ids = model.tokenizer.encode(response, add_special_tokens=False)
+        gen_token_labels = []
+        for i, tid in enumerate(response_token_ids):
+            tok = model.tokenizer.decode([tid], skip_special_tokens=False).strip()
+            gen_token_labels.append(f"{i}: {tok}" if tok else f"{i}: [{tid}]")
+
+        visualize_text_attention_per_gen_token(
+            text_attn_by_layer=text_attn_by_layer,
+            layer_indices=layer_indices,
+            text_token_labels=text_token_labels,
+            gen_token_labels=gen_token_labels,
+            output_path=str(debug_dir / "text_attention_per_gen_token.png"),
+        )
 
     # Visualize attention ratios across all layers
     if per_layer_ratios:
