@@ -14,4 +14,6 @@ for SPLIT in h11 h12 h13; do
         --title "RoboRefer-2B-SFT | $SPLIT — Yes - No Logit Diff"
 done
 
+python plot_logit_stats.py --csv-dir . --output logit_stats.png
+
 echo "All done."
