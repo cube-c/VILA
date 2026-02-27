@@ -96,18 +96,28 @@ def get_yes_no_logits(model, prompt):
     return last_logits[yes_id].item(), last_logits[no_id].item()
 
 
-def build_yes_no_question(entry):
+VARIANTS = {
+    # variant_name: (question_template, gt_when_closer, gt_when_farther)
+    #   "closer"/"farther" = the VQA answer field (obj1 is closer/farther than obj2)
+    "obj1_closer": ("Is the {a} closer to the camera than the {b}?", "Yes", "No"),
+    "obj2_closer": ("Is the {b} closer to the camera than the {a}?", "No", "Yes"),
+    "obj1_farther": ("Is the {a} farther from the camera than the {b}?", "No", "Yes"),
+    "obj2_farther": ("Is the {b} farther from the camera than the {a}?", "Yes", "No"),
+}
+
+
+def build_yes_no_question(entry, variant="obj1_closer"):
     """Build a yes/no question from a VQA entry.
 
     Returns (question_text, ground_truth) where ground_truth is 'Yes' or 'No'.
     """
     obj1 = entry["obj1"]
     obj2 = entry["obj2"]
-    question = (
-        f"Is the {obj1['color']} {obj1['shape']} closer to the camera "
-        f"than the {obj2['color']} {obj2['shape']}? Answer with yes or no."
-    )
-    gt = "Yes" if entry["answer"] == "closer" else "No"
+    template, gt_closer, gt_farther = VARIANTS[variant]
+    a = f"{obj1['color']} {obj1['shape']}"
+    b = f"{obj2['color']} {obj2['shape']}"
+    question = template.format(a=a, b=b) + " Answer with yes or no."
+    gt = gt_closer if entry["answer"] == "closer" else gt_farther
     return question, gt
 
 
@@ -119,6 +129,9 @@ def main() -> None:
     parser.add_argument("--image-root", type=str, default="/app/blender",
                         help="Root directory for resolving image paths in vqa.json")
     parser.add_argument("--output-csv", "-o", type=str, default="logit_results_vqa.csv")
+    parser.add_argument("--variant", type=str, default=None,
+                        choices=list(VARIANTS.keys()),
+                        help="Question variant. If not specified, iterate over all variants.")
     args = parser.parse_args()
 
     model = llava.load(args.model_path, model_base=None)
@@ -128,46 +141,59 @@ def main() -> None:
     with open(args.vqa_json) as f:
         vqa_data = json.load(f)
 
-    print(f"Loaded {len(vqa_data)} VQA entries from {args.vqa_json}")
+    variants = [args.variant] if args.variant else list(VARIANTS.keys())
 
-    results = []
-    correct = 0
-    for i, entry in enumerate(vqa_data):
-        image_path = os.path.join(args.image_root, entry["image"])
-        question, gt = build_yes_no_question(entry)
+    for variant in variants:
+        if args.variant:
+            out_csv = args.output_csv
+        else:
+            base, ext = os.path.splitext(args.output_csv)
+            out_csv = f"{base}_{variant}{ext}"
 
-        prompt = [Image(image_path), question]
-        yes_logit, no_logit = get_yes_no_logits(model, prompt)
-        pred = "Yes" if yes_logit > no_logit else "No"
-        is_correct = pred == gt
+        print(f"\n{'='*60}")
+        print(f"Variant: {variant}  |  {VARIANTS[variant][0]}")
+        print(f"{'='*60}")
+        print(f"Loaded {len(vqa_data)} VQA entries from {args.vqa_json}")
 
-        if is_correct:
-            correct += 1
+        results = []
+        correct = 0
+        for i, entry in enumerate(vqa_data):
+            image_path = os.path.join(args.image_root, entry["image"])
+            question, gt = build_yes_no_question(entry, variant)
 
-        results.append({
-            "model_path": args.model_path,
-            "image": entry["image"],
-            "question": question,
-            "ground_truth": gt,
-            "prediction": pred,
-            "Yes_logit": yes_logit,
-            "No_logit": no_logit,
-            "correct": is_correct,
-        })
-        print(f"[{i+1}/{len(vqa_data)}] {os.path.basename(entry['image'])}: "
-              f"Yes={yes_logit:.4f}, No={no_logit:.4f} | pred={pred} gt={gt} {'OK' if is_correct else 'WRONG'}")
+            prompt = [Image(image_path), question]
+            yes_logit, no_logit = get_yes_no_logits(model, prompt)
+            pred = "Yes" if yes_logit > no_logit else "No"
+            is_correct = pred == gt
 
-    acc = correct / len(vqa_data) * 100 if vqa_data else 0
-    print(f"\nAccuracy: {correct}/{len(vqa_data)} ({acc:.1f}%)")
+            if is_correct:
+                correct += 1
 
-    fieldnames = ["model_path", "image", "question", "ground_truth", "prediction",
-                  "Yes_logit", "No_logit", "correct"]
-    with open(args.output_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(results)
+            results.append({
+                "model_path": args.model_path,
+                "variant": variant,
+                "image": entry["image"],
+                "question": question,
+                "ground_truth": gt,
+                "prediction": pred,
+                "Yes_logit": yes_logit,
+                "No_logit": no_logit,
+                "correct": is_correct,
+            })
+            print(f"[{i+1}/{len(vqa_data)}] {os.path.basename(entry['image'])}: "
+                  f"Yes={yes_logit:.4f}, No={no_logit:.4f} | pred={pred} gt={gt} {'OK' if is_correct else 'WRONG'}")
 
-    print(f"Results saved to {args.output_csv}")
+        acc = correct / len(vqa_data) * 100 if vqa_data else 0
+        print(f"\nAccuracy ({variant}): {correct}/{len(vqa_data)} ({acc:.1f}%)")
+
+        fieldnames = ["model_path", "variant", "image", "question", "ground_truth", "prediction",
+                      "Yes_logit", "No_logit", "correct"]
+        with open(out_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(results)
+
+        print(f"Results saved to {out_csv}")
 
 
 if __name__ == "__main__":
