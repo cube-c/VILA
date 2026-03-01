@@ -10,12 +10,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", "-i", type=str, required=True, help="Input CSV file")
     parser.add_argument("--output", "-o", type=str, required=True, help="Output PNG file")
-    parser.add_argument("--title", type=str, default="A - B Logit Difference (16x16)")
+    parser.add_argument("--title", type=str, default="Yes - No Logit Difference (16x16)")
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
-    df["logit_diff"] = df["A_logit"] - df["B_logit"]
-    df["p_a"] = 1.0 / (1.0 + np.exp(-df["logit_diff"]))
+    df["logit_diff"] = df["Yes_logit"] - df["No_logit"]
+    df["p_yes"] = 1.0 / (1.0 + np.exp(-df["logit_diff"]))
 
     # Extract phA and phB from image filename like '0000_phA00_phB01.png'
     parsed = df["image"].str.extract(r"phA(\d+)_phB(\d+)\.png$")
@@ -23,18 +23,16 @@ def main():
     df["phB"] = parsed[1].astype(int)
 
     # Average across scenes for each (phA, phB) cell
-    grid_df = df.groupby(["phA", "phB"])["p_a"].mean().reset_index()
+    grid_df = df.groupby(["phA", "phB"])["p_yes"].mean().reset_index()
     grid = np.full((16, 16), np.nan)
     for _, row in grid_df.iterrows():
-        grid[int(row["phA"]), int(row["phB"])] = row["p_a"]
+        grid[int(row["phA"]), int(row["phB"])] = row["p_yes"]
 
-    fig, ax = plt.subplots(figsize=(8, 7))
-    im = ax.imshow(grid, cmap="seismic", aspect="equal", vmin=0, vmax=1)
-    fig.colorbar(im, ax=ax, label="P(A)")
+    from matplotlib.patches import Rectangle
 
     # Compute RMSE against ground truth
-    gt_binary = (df["ground_truth"] == "A").astype(float)
-    rmse = np.sqrt(np.mean((df["p_a"] - gt_binary) ** 2))
+    gt_binary = (df["ground_truth"] == "Yes").astype(float)
+    rmse = np.sqrt(np.mean((df["p_yes"] - gt_binary) ** 2))
 
     # Vertical consistency: compare columns 2-6 vs 10-14 (obj2 phase effect)
     obj2_lo = np.nanmean(grid[:, 2:7])   # cols 2~6
@@ -57,22 +55,43 @@ def main():
     hz_obj2_wrap = np.nanmean(grid[:, wrap_idx])
     hz_obj2 = hz_obj2_mid - hz_obj2_wrap
 
-    metrics_text = (
-        f"RMSE = {rmse:.4f}\n"
-        f"Obj1 Δ(rows 10-14 vs 2-6)  = {vc_obj1:+.4f}\n"
-        f"Obj2 Δ(cols 10-14 vs 2-6)  = {vc_obj2:+.4f}\n"
-        f"Obj1 Δ(rows 6-10 vs 14-2)  = {hz_obj1:+.4f}\n"
-        f"Obj2 Δ(cols 6-10 vs 14-2)  = {hz_obj2:+.4f}"
-    )
-    ax.text(0.02, 0.98, metrics_text, transform=ax.transAxes,
-            fontsize=9, verticalalignment="top", fontfamily="monospace",
-            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
+    # Overlapping corners: both objects in specific regions
+    o1top_o2bot = np.nanmean(grid[2:7, 10:15])    # obj1 top, obj2 bottom
+    o1bot_o2top = np.nanmean(grid[10:15, 2:7])    # obj1 bottom, obj2 top
+    overlap_delta = o1top_o2bot - o1bot_o2top
+
+    fig, (ax, ax_txt) = plt.subplots(1, 2, figsize=(14, 7),
+                                      gridspec_kw={"width_ratios": [1, 0.5]})
+    im = ax.imshow(grid, cmap="seismic", aspect="equal", vmin=0, vmax=1)
+    fig.colorbar(im, ax=ax, label="P(Yes)")
+
+    # Cyan bounding boxes for overlap regions
+    ax.add_patch(Rectangle((9.5, 1.5), 5, 5, linewidth=2, edgecolor="cyan", facecolor="none"))
+    ax.add_patch(Rectangle((1.5, 9.5), 5, 5, linewidth=2, edgecolor="cyan", facecolor="none"))
 
     ax.set_xlabel("Obj2 Phase (phB)")
     ax.set_ylabel("Obj1 Phase (phA)")
     ax.set_title(args.title)
     ax.set_xticks(range(16))
     ax.set_yticks(range(16))
+
+    metrics_text = (
+        f"RMSE = {rmse:.4f}\n"
+        f"\n"
+        f"Obj1 top={obj1_lo:.4f}  bottom={obj1_hi:.4f}  Δ={vc_obj1:+.4f}\n"
+        f"Obj2 top={obj2_lo:.4f}  bottom={obj2_hi:.4f}  Δ={vc_obj2:+.4f}\n"
+        f"\n"
+        f"Obj1 right={hz_obj1_wrap:.4f}  left={hz_obj1_mid:.4f}  Δ={hz_obj1:+.4f}\n"
+        f"Obj2 right={hz_obj2_wrap:.4f}  left={hz_obj2_mid:.4f}  Δ={hz_obj2:+.4f}\n"
+        f"\n"
+        f"O1top+O2bot = {o1top_o2bot:.4f}\n"
+        f"O1bot+O2top = {o1bot_o2top:.4f}\n"
+        f"Δ           = {overlap_delta:+.4f}"
+    )
+    ax_txt.axis("off")
+    ax_txt.text(0.05, 0.95, metrics_text, transform=ax_txt.transAxes,
+                fontsize=10, verticalalignment="top", fontfamily="monospace",
+                bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
 
     plt.tight_layout()
     plt.savefig(args.output, dpi=150)
