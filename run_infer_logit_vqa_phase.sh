@@ -3,10 +3,10 @@
 set -euo pipefail
 
 IMAGE_ROOT="/app/blender"
-VQA_JSON="/app/blender/output/phasevar/0/vqa_obj1.json"
+VQA_JSON="/app/blender/output/phasevar_5/vqa_obj1.json"
 
-# VARIANTS="obj1_closer obj2_closer obj1_farther obj2_farther"
-VARIANTS="obj1_closer obj2_closer"
+VARIANTS="obj1_closer obj2_closer obj1_farther obj2_farther"
+# VARIANTS="obj1_closer obj2_closer"
 
 # model_path suffix label gpu
 MODELS=(
@@ -24,7 +24,7 @@ run_model() {
     local LABEL="$3"
     local GPU="$4"
 
-    local BASE_CSV="logit_results_vqa_phase${SUFFIX}.csv"
+    local BASE_CSV="output/paper_results/logit_results_vqa_phase${SUFFIX}.csv"
 
     # echo "========== ${LABEL} | phasevar (all variants) | GPU ${GPU} =========="
     # CUDA_VISIBLE_DEVICES=$GPU python llava/cli/infer_logit_vqa.py \
@@ -36,19 +36,25 @@ run_model() {
     echo "========== Plotting per-variant heatmaps =========="
     local VARIANT_CSVS=""
     for V in $VARIANTS; do
-        local V_CSV="logit_results_vqa_phase${SUFFIX}_${V}.csv"
+        local V_CSV="output/paper_results/logit_results_vqa_phase${SUFFIX}_${V}.csv"
         VARIANT_CSVS="$VARIANT_CSVS $V_CSV"
         python plot_heatmap_vqa.py \
             --input "$V_CSV" \
-            --output "logit_heatmap_vqa_phase${SUFFIX}_${V}.png" \
+            --output "output/paper_results/logit_heatmap_vqa_phase${SUFFIX}_${V}.png" \
             --title "${LABEL} | ${V}"
     done
 
     echo "========== Plotting aggregate heatmap =========="
     python plot_heatmap_vqa_agg.py \
         --inputs $VARIANT_CSVS \
-        --output "logit_heatmap_vqa_phase${SUFFIX}_agg.png" \
+        --output "output/paper_results/logit_heatmap_vqa_phase${SUFFIX}_agg.png" \
         --title "${LABEL} | Mean P(correct)"
+
+    echo "========== Plotting accuracy heatmap =========="
+    python plot_heatmap_vqa_acc.py \
+        --inputs $VARIANT_CSVS \
+        --output "output/paper_results/logit_heatmap_vqa_phase${SUFFIX}_acc.png" \
+        --title "${LABEL} | Accuracy"
 }
 
 # Launch all models in parallel, one GPU each
@@ -57,7 +63,7 @@ pids=()
 for entry in "${MODELS[@]}"; do
     IFS='|' read -r MODEL_PATH SUFFIX LABEL GPU <<< "$entry"
     run_model "$MODEL_PATH" "$SUFFIX" "$LABEL" "$GPU" \
-        > "output_vqa_phase${SUFFIX}.log" 2>&1 &
+        > "output/paper_results/output_vqa_phase${SUFFIX}.log" 2>&1 &
     pids+=($!)
     echo "Launched ${LABEL} on GPU ${GPU} (PID: ${pids[-1]})"
 done
@@ -70,7 +76,7 @@ for i in "${!MODELS[@]}"; do
     if wait "${pids[$i]}"; then
         echo "=== Done: ${LABEL} ==="
     else
-        echo "=== FAILED: ${LABEL} (see output_vqa_phase${SUFFIX}.log) ===" >&2
+        echo "=== FAILED: ${LABEL} (see output/paper_results/output_vqa_phase${SUFFIX}.log) ===" >&2
         failed=1
     fi
 done

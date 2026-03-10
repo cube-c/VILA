@@ -1,34 +1,24 @@
 import argparse
-import glob
-import re
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
-
-def compute_p_correct(df):
-    """P(correct) = p(A) when GT=A, 1-p(A) when GT=B."""
-    df = df.copy()
-    df["logit_diff"] = df["Yes_logit"] - df["No_logit"]
-    df["p_yes"] = 1.0 / (1.0 + np.exp(-df["logit_diff"]))
-    gt_yes = df["ground_truth"] == "Yes"
-    df["p_correct"] = np.where(gt_yes, df["p_yes"], 1.0 - df["p_yes"])
-    return df
+from matplotlib.patches import Rectangle
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--inputs", "-i", type=str, nargs="+", required=True,
                         help="Variant CSV files (e.g. *_obj1_closer.csv *_obj2_closer.csv ...)")
-    parser.add_argument("--output", "-o", type=str, default="logit_heatmap_vqa_agg.png")
-    parser.add_argument("--title", type=str, default="Mean accuracy across variants (16x16)")
+    parser.add_argument("--output", "-o", type=str, default="logit_heatmap_vqa_acc.png")
+    parser.add_argument("--title", type=str, default="Accuracy (argmax) across variants (16x16)")
     args = parser.parse_args()
 
     frames = []
     for path in args.inputs:
         df = pd.read_csv(path)
-        df = compute_p_correct(df)
+        # Ensure correct is boolean
+        df["correct"] = df["correct"].astype(str).str.strip().str.lower() == "true"
         frames.append(df)
         print(f"Loaded {len(df)} rows from {path}")
 
@@ -39,17 +29,13 @@ def main():
     df["phA"] = parsed[0].astype(int)
     df["phB"] = parsed[1].astype(int)
 
-    # Average p_correct across all variants and scenes per cell
-    grid_df = df.groupby(["phA", "phB"])["p_correct"].mean().reset_index()
+    # Accuracy per cell
+    grid_df = df.groupby(["phA", "phB"])["correct"].mean().reset_index()
     grid = np.full((16, 16), np.nan)
     for _, row in grid_df.iterrows():
-        grid[int(row["phA"]), int(row["phB"])] = row["p_correct"]
+        grid[int(row["phA"]), int(row["phB"])] = row["correct"]
 
-    mean_p = np.nanmean(grid)
-
-    # RMSE against average p_correct
-    avg_p_correct = df["p_correct"].mean()
-    rmse_avg = np.sqrt(np.mean((df["p_correct"] - avg_p_correct) ** 2))
+    mean_acc = np.nanmean(grid)
 
     # Vertical consistency: cols 2-6 vs 10-14
     obj2_lo = np.nanmean(grid[:, 2:7])
@@ -70,33 +56,28 @@ def main():
     hz_obj2_wrap = np.nanmean(grid[:, wrap_idx])
     hz_obj2 = hz_obj2_mid - hz_obj2_wrap
 
-    # Overlapping corners: both objects in specific regions
-    o1top_o2bot = np.nanmean(grid[2:7, 10:15])    # obj1 top, obj2 bottom
-    o1bot_o2top = np.nanmean(grid[10:15, 2:7])    # obj1 bottom, obj2 top
+    # Overlapping corners
+    o1top_o2bot = np.nanmean(grid[2:7, 10:15])
+    o1bot_o2top = np.nanmean(grid[10:15, 2:7])
     overlap_delta = o1top_o2bot - o1bot_o2top
 
     fig, (ax, ax_txt) = plt.subplots(1, 2, figsize=(14, 7),
                                       gridspec_kw={"width_ratios": [1, 0.5]})
+    im = ax.imshow(grid, cmap="seismic", aspect="equal", vmin=0, vmax=1)
+    fig.colorbar(im, ax=ax, label="Accuracy")
 
-    # Phase indices 0..15 map to angles 0..337.5 degrees (step=22.5)
-    angles = np.arange(16) * 22.5
-    im = ax.imshow(grid, cmap="seismic", aspect="equal", vmin=0, vmax=1,
-                   extent=[angles[0] - 11.25, angles[-1] + 11.25,
-                           angles[-1] + 11.25, angles[0] - 11.25])
-    fig.colorbar(im, ax=ax, label="Mean accuracy")
+    # Cyan bounding boxes for overlap regions
+    ax.add_patch(Rectangle((9.5, 1.5), 5, 5, linewidth=2, edgecolor="cyan", facecolor="none"))
+    ax.add_patch(Rectangle((1.5, 9.5), 5, 5, linewidth=2, edgecolor="cyan", facecolor="none"))
 
-    ax.set_xlabel("Obj2 Phase (degrees)")
-    ax.set_ylabel("Obj1 Phase (degrees)")
+    ax.set_xlabel("Obj2 Phase (phB)")
+    ax.set_ylabel("Obj1 Phase (phA)")
     ax.set_title(args.title)
-    major_angles = np.arange(0, 360, 45)
-    ax.set_xticks(major_angles)
-    ax.set_yticks(major_angles)
-    ax.set_xticklabels([f"{a:.0f}" for a in major_angles])
-    ax.set_yticklabels([f"{a:.0f}" for a in major_angles])
+    ax.set_xticks(range(16))
+    ax.set_yticks(range(16))
 
     metrics_text = (
-        f"Mean accuracy = {mean_p:.4f}\n"
-        f"RMSE(avg) = {rmse_avg:.4f}\n"
+        f"Mean Accuracy = {mean_acc:.4f}\n"
         f"\n"
         f"Obj1 top={obj1_lo:.4f}  bottom={obj1_hi:.4f}  Δ={vc_obj1:+.4f}\n"
         f"Obj2 top={obj2_lo:.4f}  bottom={obj2_hi:.4f}  Δ={vc_obj2:+.4f}\n"
@@ -120,10 +101,9 @@ def main():
     # Save metrics as TSV
     tsv_path = args.output.rsplit(".", 1)[0] + ".tsv"
     metrics_rows = [
-        {"metric": "mean_p_correct", "value": mean_p},
-        {"metric": "min_p_correct", "value": np.nanmin(grid)},
-        {"metric": "max_p_correct", "value": np.nanmax(grid)},
-        {"metric": "rmse_avg", "value": rmse_avg},
+        {"metric": "mean_accuracy", "value": mean_acc},
+        {"metric": "min_accuracy", "value": np.nanmin(grid)},
+        {"metric": "max_accuracy", "value": np.nanmax(grid)},
         {"metric": "obj1_top", "value": obj1_lo},
         {"metric": "obj1_bottom", "value": obj1_hi},
         {"metric": "obj1_delta_bottom_vs_top", "value": vc_obj1},
