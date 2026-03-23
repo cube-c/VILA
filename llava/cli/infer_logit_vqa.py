@@ -66,7 +66,7 @@ def configure_ps3_and_context_length(model):
 
 @torch.inference_mode()
 def get_yes_no_logits(model, prompt):
-    """Run a forward pass and return logits for 'Yes' and 'No' tokens."""
+    """Run a forward pass and return logits for 'Yes'/'No' tokens plus the real generated response."""
     tokenizer = model.tokenizer
 
     yes_id = tokenizer.encode("Yes", add_special_tokens=False)[0]
@@ -86,14 +86,16 @@ def get_yes_no_logits(model, prompt):
     # Tokenize
     input_ids = tokenize_conversation(conversation, tokenizer, add_generation_prompt=True).cuda().unsqueeze(0)
 
-    # Forward pass via _embed + LLM
+    # --- logits ---
     inputs_embeds, _, attention_mask = model._embed(input_ids, media, media_config, None, None)
     outputs = model.llm(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
-
-    # Get logits for the last position
     last_logits = outputs.logits[0, -1, :]
 
-    return last_logits[yes_id].item(), last_logits[no_id].item()
+    # --- greedy generation for real response ---
+    # gen_ids = model.generate(input_ids, media, media_config, max_new_tokens=32, do_sample=False)
+    # response = tokenizer.decode(gen_ids[0], skip_special_tokens=True).strip()
+
+    return last_logits[yes_id].item(), last_logits[no_id].item(), ""
 
 
 VARIANTS = {
@@ -162,7 +164,7 @@ def main() -> None:
             question, gt = build_yes_no_question(entry, variant)
 
             prompt = [Image(image_path), question]
-            yes_logit, no_logit = get_yes_no_logits(model, prompt)
+            yes_logit, no_logit, response = get_yes_no_logits(model, prompt)
             pred = "Yes" if yes_logit > no_logit else "No"
             is_correct = pred == gt
 
@@ -176,18 +178,20 @@ def main() -> None:
                 "question": question,
                 "ground_truth": gt,
                 "prediction": pred,
+                "response": response,
                 "Yes_logit": yes_logit,
                 "No_logit": no_logit,
                 "correct": is_correct,
             })
             print(f"[{i+1}/{len(vqa_data)}] {os.path.basename(entry['image'])}: "
-                  f"Yes={yes_logit:.4f}, No={no_logit:.4f} | pred={pred} gt={gt} {'OK' if is_correct else 'WRONG'}")
+                  f"Yes={yes_logit:.4f}, No={no_logit:.4f} | pred={pred} gt={gt} "
+                  f"resp=\"{response}\" {'OK' if is_correct else 'WRONG'}")
 
         acc = correct / len(vqa_data) * 100 if vqa_data else 0
         print(f"\nAccuracy ({variant}): {correct}/{len(vqa_data)} ({acc:.1f}%)")
 
         fieldnames = ["model_path", "variant", "image", "question", "ground_truth", "prediction",
-                      "Yes_logit", "No_logit", "correct"]
+                      "response", "Yes_logit", "No_logit", "correct"]
         with open(out_csv, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

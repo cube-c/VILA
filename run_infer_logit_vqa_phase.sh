@@ -26,12 +26,12 @@ run_model() {
 
     local BASE_CSV="output/paper_results/logit_results_vqa_phase${SUFFIX}.csv"
 
-    # echo "========== ${LABEL} | phasevar (all variants) | GPU ${GPU} =========="
-    # CUDA_VISIBLE_DEVICES=$GPU python llava/cli/infer_logit_vqa.py \
-        # --model-path "$MODEL_PATH" \
-        # --vqa-json "$VQA_JSON" \
-        # --image-root "$IMAGE_ROOT" \
-        # --output-csv "$BASE_CSV"
+    echo "========== ${LABEL} | phasevar (all variants) | GPU ${GPU} =========="
+    CUDA_VISIBLE_DEVICES=$GPU python llava/cli/infer_logit_vqa.py \
+        --model-path "$MODEL_PATH" \
+        --vqa-json "$VQA_JSON" \
+        --image-root "$IMAGE_ROOT" \
+        --output-csv "$BASE_CSV"
 
     echo "========== Plotting per-variant heatmaps =========="
     local VARIANT_CSVS=""

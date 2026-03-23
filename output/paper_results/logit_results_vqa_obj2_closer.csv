@@ -1,0 +1,11 @@
+model,variant,image,question,ground_truth,prediction,raw_response,correct
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB00.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB01.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB02.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB03.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB04.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB05.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB06.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB07.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB08.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False
+gpt-5,obj2_closer,output/phasevar_5/0000_phA00_phB09.png,Is the green sphere closer to the camera than the cyan cube? Answer with yes or no.,Yes,,,False

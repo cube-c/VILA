@@ -1,0 +1,6 @@
+metric	value
+acc_consistent	0.5041123229460455
+acc_counter	0.47123128291588545
+acc_diff_con_minus_ctr	0.032881040030160014
+n_consistent	5664.0
+n_counter	5568.0
